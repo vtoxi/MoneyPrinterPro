@@ -1,0 +1,11 @@
+# Python deps for Studio (make_media.py) and the local image engine (local_image.py)
+pillow
+numpy
+imageio
+imageio-ffmpeg
+resvg-py
+torch
+diffusers
+transformers
+accelerate
+safetensors

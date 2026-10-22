@@ -19,7 +19,7 @@ assets/*.log
 assets/*.json
 
 # User data
-personas/
+/personas/
 identity/
 data/
 

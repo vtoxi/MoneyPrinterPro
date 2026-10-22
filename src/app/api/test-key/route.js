@@ -21,9 +21,9 @@ export async function POST(request) {
 
   try {
     const { GoogleGenAI } = await import('@google/genai');
-    const ai = new GoogleGenAI({ apiKey });
+    const ai = new GoogleGenAI({ apiKey, vertexai: apiKey.startsWith('AQ.') });
     const response = await ai.models.generateContent({
-      model: 'gemini-2.0-flash',
+      model: 'gemini-2.5-flash',
       contents: [{ role: 'user', parts: [{ text: 'Reply with exactly: OK' }] }],
     });
     const text = response.candidates?.[0]?.content?.parts?.[0]?.text || '';
@@ -34,6 +34,7 @@ export async function POST(request) {
     );
   } catch (err) {
     const message = err?.message || 'Unknown error';
+    console.error('[test-key] error:', message);
     if (/API_KEY_INVALID|401/.test(message)) {
       return NextResponse.json(
         { valid: false, error: 'Invalid API key. Please check and try again.' },

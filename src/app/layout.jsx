@@ -15,7 +15,7 @@ function ApiKeyBanner() {
   if (hasKey) return null;
   return (
     <div className="banner">
-      <span><strong>No API key configured.</strong> Add your Gemini key to start generating.</span>
+      <span><strong>No API key configured.</strong> Images use a free service; add a Gemini key for identity-matched images and video.</span>
       <Link href="/settings" className="btn btn-primary">Open settings</Link>
     </div>
   );
@@ -23,6 +23,7 @@ function ApiKeyBanner() {
 
 const NAV = [
   { href: '/', label: 'Dashboard', icon: IconHome },
+  { href: '/studio', label: 'Studio', icon: IconSparkles },
   { href: '/autopilot', label: 'Autopilot', icon: IconSparkles },
   { href: '/personas/new', label: 'New persona', icon: IconUserPlus },
   { href: '/settings', label: 'Settings', icon: IconSettings },

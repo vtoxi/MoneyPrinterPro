@@ -42,7 +42,8 @@ Style: Editorial fashion film, professional grade`.trim();
   return `Cinematic fashion video, 8 seconds:
 
 Setting: ${location}
-Subject: A woman wearing ${caption}
+Subject: A woman wearing ${caption}${promptMeta.character ? `
+Character (keep consistent): ${promptMeta.character}` : ''}
 Camera: ${shot}, static position
 Lighting: ${lighting}
 Motion: ${motion}, minimal camera movement

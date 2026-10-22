@@ -18,8 +18,10 @@ export default function SettingsPage() {
   const [status, setStatus] = useState('idle');
   const [statusMessage, setStatusMessage] = useState('');
   const [saved, setSaved] = useState(false);
+  const [pollKey, setPollKey] = useState('');
 
   useEffect(() => {
+    setPollKey(localStorage.getItem('pollinations_api_key') || '');
     const stored = localStorage.getItem('gemini_api_key');
     if (stored) {
       setApiKey(stored);
@@ -157,6 +159,40 @@ export default function SettingsPage() {
               {apiKey && (
                 <button className="btn btn-danger" onClick={handleClear}>Clear</button>
               )}
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="row-between mb-12">
+              <div className="row" style={{ gap: 8 }}>
+                <IconKey /> <strong style={{ fontSize: 13.5 }}>Pollinations API key (optional)</strong>
+              </div>
+              <a
+                href="https://enter.pollinations.ai"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="btn btn-ghost"
+                style={{ padding: '4px 8px' }}
+              >
+                Get a key <IconExternal size={12} />
+              </a>
+            </div>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label className="label">Used by the free image fallback. Saved automatically.</label>
+              <input
+                type="password"
+                className="input input-mono"
+                placeholder="sk_…"
+                value={pollKey}
+                onChange={(e) => {
+                  setPollKey(e.target.value);
+                  const v = e.target.value.trim();
+                  if (v) localStorage.setItem('pollinations_api_key', v);
+                  else localStorage.removeItem('pollinations_api_key');
+                }}
+                spellCheck={false}
+                autoComplete="off"
+              />
             </div>
           </div>
 

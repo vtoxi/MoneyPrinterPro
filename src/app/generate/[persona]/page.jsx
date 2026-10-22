@@ -1,9 +1,10 @@
 'use client';
-import { useState, useEffect, use } from 'react';
+import { useState, useEffect, useRef, use } from 'react';
 import Link from 'next/link';
 import {
   IconArrowLeft, IconUser, IconDownload, IconSparkles,
 } from '@/components/icons';
+import Lightbox from '@/components/Lightbox';
 
 const STYLES = [
   { id: 'lifestyle',        label: 'Lifestyle' },
@@ -44,20 +45,65 @@ export default function GeneratePage({ params }) {
   const [result, setResult] = useState(null);
   const [history, setHistory] = useState([]);
   const [error, setError] = useState(null);
+  const [lightbox, setLightbox] = useState(null);
+  const [imgV, setImgV] = useState(0); // cache-buster for the reference image
+  const [profileText, setProfileText] = useState('');
+  const [editingProfile, setEditingProfile] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const imageInput = useRef(null);
+  const profileInput = useRef(null);
 
   useEffect(() => {
     fetch(`/api/personas/${personaName}`)
-      .then((r) => r.json())
-      .then(setPersona)
-      .catch(() => setPersona({ name: personaName, displayName: personaName, description: '' }));
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('Persona not found'))))
+      .then((p) => { setPersona(p); setProfileText(p.profile ? JSON.stringify(p.profile, null, 2) : ''); })
+      .catch(() => {
+        setPersona({ name: personaName, displayName: personaName, description: '' });
+        setError(`Persona "${personaName}" doesn't exist. Create it from New persona.`);
+      });
   }, [personaName]);
+
+  // Persona edits: image replace, profile save/upload, remove. All go through /api/personas/[name].
+  async function updatePersona(req, query = '') {
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/personas/${personaName}${query}`, req);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Update failed');
+      setPersona((p) => ({ ...p, ...data.persona }));
+      setProfileText(data.persona.profile ? JSON.stringify(data.persona.profile, null, 2) : '');
+      setImgV(Date.now());
+      return true;
+    } catch (err) {
+      setError(err.message);
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function putForm(fields) {
+    const form = new FormData();
+    Object.entries(fields).forEach(([k, v]) => form.append(k, v));
+    return updatePersona({ method: 'PUT', body: form });
+  }
+
+  async function removePart(what) {
+    if (!window.confirm(`Remove the ${what === 'image' ? 'reference image' : 'character profile'}?`)) return;
+    await updatePersona({ method: 'DELETE' }, `?what=${what}`);
+  }
 
   async function generateImage(apiKey) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 180000);
+    const timeout = setTimeout(() => controller.abort(), 600000);
     const res = await fetch('/api/generate', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'x-pollinations-key': localStorage.getItem('pollinations_api_key') || '',
+      },
       signal: controller.signal,
       body: JSON.stringify({
         persona: personaName,
@@ -103,8 +149,9 @@ export default function GeneratePage({ params }) {
   async function handleGenerate() {
     setError(null);
     const apiKey = localStorage.getItem('gemini_api_key');
-    if (!apiKey) {
-      setError('No API key set. Go to Settings to add your Gemini key.');
+    // Images work without a key (free fallback); video needs one.
+    if (!apiKey && outputType !== 'image') {
+      setError('Video needs a Gemini key. Go to Settings, or switch to image output.');
       return;
     }
 
@@ -214,15 +261,85 @@ export default function GeneratePage({ params }) {
             {persona.hasRefImage ? (
               <img
                 className="ref-preview"
-                src={`/api/personas/${persona.name}/image`}
+                src={`/api/personas/${persona.name}/image?v=${imgV}`}
                 alt={persona.displayName}
+                title="Click to enlarge"
+                style={{ cursor: 'zoom-in' }}
+                onClick={() => setLightbox(`/api/personas/${persona.name}/image?v=${imgV}`)}
               />
             ) : (
               <div className="ref-placeholder"><IconUser size={32} /></div>
             )}
             <div className="row mt-12" style={{ gap: 6, flexWrap: 'wrap' }}>
               {persona.hasRefImage  && <span className="badge"><span className="dot" style={{ color: 'var(--success)' }} /> Ref</span>}
+              {persona.hasProfile   && <span className="badge"><span className="dot" style={{ color: 'var(--accent)' }} /> Profile</span>}
               {persona.hasBlueprint && <span className="badge"><span className="dot" style={{ color: 'var(--accent)' }} /> Blueprint</span>}
+            </div>
+            <input
+              ref={imageInput}
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              hidden
+              onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) putForm({ image: f }); }}
+            />
+            <div className="row mt-12" style={{ gap: 6, flexWrap: 'wrap' }}>
+              <button type="button" className="btn btn-secondary" disabled={saving} onClick={() => imageInput.current?.click()}>
+                {persona.hasRefImage ? 'Replace image' : 'Upload image'}
+              </button>
+              {persona.hasRefImage && (
+                <button type="button" className="btn btn-danger" disabled={saving} onClick={() => removePart('image')}>Remove</button>
+              )}
+            </div>
+          </div>
+
+          <div className="card card-tight">
+            <div className="row-between">
+              <div className="section-label" style={{ margin: 0 }}>Character profile (JSON)</div>
+              {persona.hasProfile && <span className="badge badge-success"><span className="dot" /> Active</span>}
+            </div>
+            <p className="faint mt-12" style={{ fontSize: 12, lineHeight: 1.5 }}>
+              Paste or upload the JSON from ChatGPT (age, look, personality…). It is added to every image and video prompt to keep this character consistent.
+            </p>
+            {editingProfile && (
+              <textarea
+                className="textarea mt-12"
+                rows={10}
+                spellCheck={false}
+                placeholder={'{ "age": 26, "personality": "confident, warm" }'}
+                value={profileText}
+                onChange={(e) => setProfileText(e.target.value)}
+                style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 12 }}
+              />
+            )}
+            <input
+              ref={profileInput}
+              type="file"
+              accept="application/json,.json"
+              hidden
+              onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) putForm({ profileFile: f }); }}
+            />
+            <div className="row mt-12" style={{ gap: 6, flexWrap: 'wrap' }}>
+              {editingProfile ? (
+                <>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    disabled={saving || !profileText.trim()}
+                    onClick={async () => { if (await putForm({ profile: profileText })) setEditingProfile(false); }}
+                  >
+                    Save
+                  </button>
+                  <button type="button" className="btn btn-ghost" onClick={() => setEditingProfile(false)}>Cancel</button>
+                </>
+              ) : (
+                <button type="button" className="btn btn-secondary" disabled={saving} onClick={() => setEditingProfile(true)}>
+                  {persona.hasProfile ? 'View / edit' : 'Paste JSON'}
+                </button>
+              )}
+              <button type="button" className="btn btn-secondary" disabled={saving} onClick={() => profileInput.current?.click()}>Upload .json</button>
+              {persona.hasProfile && (
+                <button type="button" className="btn btn-danger" disabled={saving} onClick={() => removePart('profile')}>Remove</button>
+              )}
             </div>
           </div>
 
@@ -359,7 +476,14 @@ export default function GeneratePage({ params }) {
 
               {/* Image result */}
               {resultHasImage && (
-                <img src={result.imageUrl} alt="Generated" className="result-image" />
+                <img
+                  src={result.imageUrl}
+                  alt="Generated"
+                  className="result-image"
+                  title="Click to enlarge"
+                  style={{ cursor: 'zoom-in' }}
+                  onClick={() => setLightbox(result.imageUrl)}
+                />
               )}
 
               {/* Video result */}
@@ -416,6 +540,7 @@ export default function GeneratePage({ params }) {
           font-size: 18px;
         }
       `}</style>
+      <Lightbox src={lightbox} onClose={() => setLightbox(null)} />
     </div>
   );
 }

@@ -94,6 +94,20 @@ export function validateGenerateBody(body) {
   return { value: out };
 }
 
+export const MAX_PROFILE_BYTES = 100 * 1024;
+
+/** Parse an uploaded/pasted character profile. Must be a JSON object. */
+export function parseProfileJson(text) {
+  if (typeof text !== 'string' || !text.trim()) return { error: 'Profile is empty' };
+  if (text.length > MAX_PROFILE_BYTES) return { error: 'Profile JSON too large (max 100 KB)' };
+  let value;
+  try { value = JSON.parse(text); } catch { return { error: 'Profile is not valid JSON' }; }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { error: 'Profile must be a JSON object (e.g. {"age": 25, ...})' };
+  }
+  return { value };
+}
+
 export function validateCreatePersonaFields({ name, displayName, description, style }) {
   const slug = typeof name === 'string' ? name.trim().toLowerCase().replace(/\s+/g, '-') : '';
   if (!isValidSlug(slug)) {

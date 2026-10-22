@@ -2,11 +2,16 @@ import { rateLimit } from '@/lib/rate-limit';
 import { NextResponse } from 'next/server';
 import fs from 'fs/promises';
 import path from 'path';
+import os from 'os';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import {
   REFERENCE_DIR,
   GENERATED_DIR,
   findRefImage,
   readBlueprint,
+  readProfile,
+  profileToPrompt,
   ensureDir,
 } from '@/lib/personas';
 import { validateGenerateBody } from '@/lib/validation';
@@ -149,7 +154,7 @@ async function readJsonBody(request) {
 
 async function generateWithGemini(apiKey, prompt, refPath) {
   const { GoogleGenAI, Modality } = await import('@google/genai');
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = new GoogleGenAI({ apiKey, vertexai: apiKey.startsWith('AQ.') });
   const model = process.env.IMAGE_MODEL || 'gemini-2.5-flash-image';
 
   const parts = [];
@@ -188,6 +193,69 @@ async function generateWithGemini(apiKey, prompt, refPath) {
     }
   }
   throw formatGeminiError(lastError);
+}
+
+// Free, keyless fallback. Text-to-image only: the reference image (identity) is not used.
+async function generateWithPollinations(prompt, pollKey) {
+  const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt.slice(0, 1500))}?width=576&height=1024&model=flux&nologo=true&seed=${Math.floor(Math.random() * 1e9)}`;
+  const get = (key) => fetch(url, {
+    signal: AbortSignal.timeout(120000),
+    headers: key ? { Authorization: `Bearer ${key}` } : {},
+  });
+  let res = await get(pollKey);
+  // ponytail: the legacy host may reject newer key formats; retry keyless (rate-limited but works)
+  if (!res.ok && pollKey) res = await get(null);
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    let msg = '';
+    try { const j = JSON.parse(detail); msg = j?.error?.message || j?.error || j?.message || ''; } catch { msg = detail; }
+    console.warn('[generate] Pollinations', res.status, String(msg).slice(0, 300));
+    // no ':' or '/' here, the POST handler masks messages containing them
+    throw new Error(`Free image service failed (${res.status}) - ${String(msg).replace(/[\\/:]/g, ' ').slice(0, 160) || 'try again in a minute'}`);
+  }
+  return Buffer.from(await res.arrayBuffer());
+}
+
+// Local Stable Diffusion (SD-Turbo via tools/local_image.py): free, no API, runs on this machine.
+// Serialized because it saturates the CPU. Disable with MPP_LOCAL=off.
+const execFileP = promisify(execFile);
+let localQueue = Promise.resolve();
+function generateLocally(prompt) {
+  const job = localQueue.then(async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mpp-local-'));
+    const out = path.join(dir, 'out.png');
+    try {
+      await execFileP(
+        process.env.PYTHON || 'python',
+        [path.join(process.cwd(), 'tools', 'local_image.py'), '--prompt', prompt, '--out', out],
+        { timeout: 600000, windowsHide: true },
+      );
+      return await fs.readFile(out);
+    } finally {
+      fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+  localQueue = job.catch(() => {});
+  return job;
+}
+
+// Order: Gemini (if a key is set, keeps identity from the reference image) -> local SD-Turbo -> Pollinations.
+async function generateImage(apiKey, prompt, refPath, pollKey, shortPrompt) {
+  if (apiKey) {
+    try {
+      return { buffer: await generateWithGemini(apiKey, prompt, refPath), provider: 'gemini', model: process.env.IMAGE_MODEL || 'gemini-2.5-flash-image' };
+    } catch (err) {
+      console.warn('[generate] Gemini failed, using free fallback:', err.message);
+    }
+  }
+  if (process.env.MPP_LOCAL !== 'off') {
+    try {
+      return { buffer: await generateLocally(shortPrompt), provider: 'local', model: 'sd-turbo' };
+    } catch (err) {
+      console.warn('[generate] Local engine failed, trying Pollinations:', String(err.stderr || err.message).slice(0, 300));
+    }
+  }
+  return { buffer: await generateWithPollinations(prompt, pollKey), provider: 'pollinations', model: 'flux' };
 }
 
 function formatGeminiError(err) {
@@ -246,12 +314,6 @@ export async function POST(request) {
   const startTime = Date.now();
 
   const apiKey = request.headers.get('x-api-key')?.trim();
-  if (!apiKey) {
-    return NextResponse.json(
-      { error: 'No API key provided. Add your Gemini key in Settings.' },
-      { status: 401 },
-    );
-  }
 
   let body;
   try {
@@ -270,9 +332,10 @@ export async function POST(request) {
     await ensureDir(GENERATED_DIR);
     await ensureDir(REFERENCE_DIR);
 
-    const [refPath, blueprint] = await Promise.all([
+    const [refPath, blueprint, profile] = await Promise.all([
       findRefImage(persona),
       readBlueprint(persona),
+      readProfile(persona),
     ]);
 
     // Try engine-enhanced prompt first, fall back to simple prompt
@@ -297,8 +360,21 @@ export async function POST(request) {
       }
     }
 
-    const modelUsed = process.env.IMAGE_MODEL || 'gemini-2.5-flash-image';
-    const imageBuffer = await generateWithGemini(apiKey, fullPrompt, refPath);
+    // Character profile JSON keeps the avatar consistent across every generation.
+    const charText = profileToPrompt(profile);
+    if (charText) fullPrompt = `CHARACTER PROFILE (keep identical in every image) - ${charText}
+
+${fullPrompt}`;
+
+    // Short prompt for CLIP-based local models (~77 token limit): profile + shot + place + style.
+    const shortPrompt = [
+      'photo', charText && profileToPrompt(profile, 160), customPrompt || (shotType && SHOT_PROMPTS[shotType]) || '3/4 body, candid',
+      location || 'urban setting', STYLE_PROMPTS[style] || STYLE_PROMPTS.lifestyle, 'natural skin texture, 85mm',
+    ].filter(Boolean).join(', ').slice(0, 320);
+
+    const { buffer: imageBuffer, provider, model: modelUsed } = await generateImage(
+      apiKey, fullPrompt, refPath, request.headers.get('x-pollinations-key')?.trim(), shortPrompt,
+    );
 
     const filename = `${persona}-${Date.now()}.png`;
     await fs.writeFile(path.join(GENERATED_DIR, filename), imageBuffer);
@@ -325,7 +401,7 @@ export async function POST(request) {
       persona,
       outputType,
       style,
-      provider: 'gemini',
+      provider,
       usedEngines,
       imageUrl: `/api/files/${filename}`,
       duration_ms: durationMs,

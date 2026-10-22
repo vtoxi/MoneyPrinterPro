@@ -1,7 +1,8 @@
 import { rateLimit } from '@/lib/rate-limit';
 import { NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { findRefImage, GENERATED_DIR, ensureDir } from '@/lib/personas';
+import { isValidSlug } from '@/lib/validation';
+import { findRefImage, readProfile, profileToPrompt, GENERATED_DIR, ensureDir } from '@/lib/personas';
 import { generateVideo } from '@/lib/video/veo';
 
 export const runtime = 'nodejs';
@@ -34,8 +35,8 @@ export async function POST(request) {
 
   const { persona, caption, style, imagePath, promptMeta } = body;
 
-  if (!persona) {
-    return NextResponse.json({ error: 'Persona is required' }, { status: 400 });
+  if (!isValidSlug(persona)) {
+    return NextResponse.json({ error: 'Valid persona is required' }, { status: 400 });
   }
 
   // Use provided image path or find reference image
@@ -70,7 +71,7 @@ export async function POST(request) {
       apiKey,
       sourceImagePath,
       caption || 'Fashion editorial video',
-      promptMeta || {},
+      { ...(promptMeta || {}), character: profileToPrompt(await readProfile(persona)) },
     );
 
     const durationMs = Date.now() - startTime;
